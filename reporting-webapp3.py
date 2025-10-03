@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import io
+import requests
 
 # Set page configuration
 st.set_page_config(
@@ -58,26 +59,99 @@ def process_data(df):
         st.error(f"Fehler bei der Datenverarbeitung: {str(e)}")
         st.stop()
 
+# Function to load CSV from URL
+def load_csv_from_url(url):
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        
+        # Try different separators
+        try:
+            df = pd.read_csv(io.StringIO(response.text), sep=';')
+        except:
+            try:
+                df = pd.read_csv(io.StringIO(response.text), sep=',')
+            except:
+                df = pd.read_csv(io.StringIO(response.text), sep=None, engine='python')
+        
+        return df
+    except Exception as e:
+        st.error(f"Fehler beim Laden der CSV von URL: {str(e)}")
+        return None
+
 # Main function
 def main():
     st.title("⚡ Intern Reporting Webapp")
     
-    # File upload widget
-    st.sidebar.header("Daten hochladen")
-    uploaded_file = st.sidebar.file_uploader("CSV-Datei hochladen", type=["csv"])
+    # Get URL parameters from make.com
+    query_params = st.query_params
+    csv_url = query_params.get("csv_url", None)
+    csv_data = query_params.get("csv_data", None)  # NEW: Direct CSV content
+    start_date_param = query_params.get("start_date", None)
+    end_date_param = query_params.get("end_date", None)
     
-    # Check if file is uploaded
-    if uploaded_file is not None:
+    df = None
+    
+    # Check if CSV data is provided directly via URL parameter
+    if csv_data:
+        st.sidebar.success("📥 CSV-Daten direkt geladen...")
         try:
-            # Read the uploaded CSV file - try different separators if needed
+            # Decode base64 if needed (make.com can send base64 encoded data)
+            import base64
             try:
-                df = pd.read_csv(uploaded_file, sep=';')
+                csv_content = base64.b64decode(csv_data).decode('utf-8')
+            except:
+                csv_content = csv_data  # Already plain text
+            
+            # Try different separators
+            try:
+                df = pd.read_csv(io.StringIO(csv_content), sep=';')
             except:
                 try:
-                    df = pd.read_csv(uploaded_file, sep=',')
+                    df = pd.read_csv(io.StringIO(csv_content), sep=',')
                 except:
-                    df = pd.read_csv(uploaded_file, sep=None, engine='python')  # Auto-detect separator
-            
+                    df = pd.read_csv(io.StringIO(csv_content), sep=None, engine='python')
+        except Exception as e:
+            st.error(f"Fehler beim Verarbeiten der CSV-Daten: {str(e)}")
+            st.stop()
+    
+    # Check if CSV URL is provided via URL parameter
+    elif csv_url:
+        st.sidebar.success("📥 CSV-Datei wird von URL geladen...")
+        df = load_csv_from_url(csv_url)
+        
+        if df is None:
+            st.error("Fehler beim Laden der CSV-Datei von der URL. Bitte überprüfen Sie die URL.")
+            st.stop()
+    else:
+        # File upload widget (Fallback)
+        st.sidebar.header("Daten hochladen")
+        uploaded_file = st.sidebar.file_uploader("CSV-Datei hochladen", type=["csv"])
+        
+        # Also provide URL input option
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Oder von URL laden")
+        url_input = st.sidebar.text_input("CSV-URL eingeben")
+        
+        if url_input:
+            df = load_csv_from_url(url_input)
+        elif uploaded_file is not None:
+            try:
+                # Read the uploaded CSV file - try different separators if needed
+                try:
+                    df = pd.read_csv(uploaded_file, sep=';')
+                except:
+                    try:
+                        df = pd.read_csv(uploaded_file, sep=',')
+                    except:
+                        df = pd.read_csv(uploaded_file, sep=None, engine='python')
+            except Exception as e:
+                st.error(f"Fehler beim Verarbeiten der Datei: {str(e)}")
+                st.stop()
+    
+    # Check if we have data to process
+    if df is not None:
+        try:
             # Check if required columns are present
             required_columns = ['Ladepunkt', 'Gestartet', 'Beendet', 'Verbrauch (kWh)', 'Kundengruppe']
             missing_columns = [col for col in required_columns if col not in df.columns]
@@ -100,9 +174,27 @@ def main():
             min_date = df['Gestartet'].min().date()
             max_date = df['Gestartet'].max().date()
             
+            # Use URL parameters if provided, otherwise use defaults
+            if start_date_param and end_date_param:
+                try:
+                    default_start = pd.to_datetime(start_date_param).date()
+                    default_end = pd.to_datetime(end_date_param).date()
+                    
+                    # Ensure dates are within valid range
+                    default_start = max(min_date, min(default_start, max_date))
+                    default_end = max(min_date, min(default_end, max_date))
+                    
+                    st.sidebar.info(f"📅 Datum aus URL: {default_start} bis {default_end}")
+                except:
+                    default_start = min_date
+                    default_end = max_date
+            else:
+                default_start = min_date
+                default_end = max_date
+            
             date_range = st.sidebar.date_input(
                 "Zeitraum auswählen",
-                [min_date, max_date],
+                [default_start, default_end],
                 min_value=min_date,
                 max_value=max_date
             )
@@ -397,6 +489,18 @@ def main():
         - Operator
         
         Die Datei sollte mit Semikolon (;) als Trennzeichen formatiert sein.
+        
+        ### Verwendung mit URL-Parametern:
+        Sie können die App auch mit URL-Parametern aufrufen:
+        
+        ```
+        https://ihre-app.streamlit.app/?csv_url=https://example.com/data.csv&start_date=2025-01-01&end_date=2025-03-31
+        ```
+        
+        Parameter:
+        - `csv_url`: URL zur CSV-Datei
+        - `start_date`: Startdatum (Format: YYYY-MM-DD)
+        - `end_date`: Enddatum (Format: YYYY-MM-DD)
         """)
         
         # Display a sample data structure
